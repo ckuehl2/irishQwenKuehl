@@ -21,7 +21,14 @@ class SimpleKVCache:
     v: torch.Tensor | None = None
 
     def append(self, k_new: torch.Tensor, v_new: torch.Tensor):
-        pass
+        if self.k is None:
+            self.k = k_new
+            self.v = v_new
+
+            return
+
+        self.k = torch.cat([self.k, k_new], dim=2)
+        self.v = torch.cat([self.v, v_new], dim=2)
 
     def clear(self):
         pass
@@ -49,14 +56,52 @@ class QwenTransformer:
         """
         self.device = device
 
+        self.LN1 = RMSNorm(model_dim, device)
+        self.SA = self.attention_class(
+            model_dim, n_heads=n_heads, n_kv_heads=n_kv_heads, head_dim=head_dim, rope=rope, device=device
+        )
+        self.LN2 = RMSNorm(model_dim, device)
+        self.FFN = SwiGLU(model_dim, ffn_dim, device)
+        self.kv_cache = SimpleKVCache()
+
     def forward(self, X, key_pad_mask=None):
-        pass
+        resid = X
+
+        X = self.LN1.forward(X)
+        X = self.SA.forward(X, key_pad_mask=key_pad_mask)
+
+        X = X + resid
+        resid = X
+
+        X = self.LN2.forward(x)
+        X = self.FFN.forward(x)
+
+        X = X + resid
+
+        return X
 
     def backward(self, dY):
-        pass
+        d_resid = dY
+
+        dY = self.FFN.backward(dY)
+        dY = self.LN2.backward(dY)
+
+        dY = dY + d_resid
+
+        d_resid = dY
+
+        dY = self.SA.backward(dY)
+        dY = self.LN1.backward(dY)
+
+        dY = dY + d_resid
+
+        return dY
 
     def update(self, lr):
-        pass
+        self.LN1.update(lr)
+        self.SA.update(lr)
+        self.LN2.update(lr)
+        self.FFN.update(lr)
 
     def load_from_qwen3_block(self, block_state):
         self.LN1.gamma = block_state["input_layernorm.weight"].to(self.device).contiguous()
